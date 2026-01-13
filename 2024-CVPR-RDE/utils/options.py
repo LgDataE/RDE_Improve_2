@@ -73,6 +73,10 @@ def get_args():
     parser.add_argument("--test_batch_size", type=int, default=512)
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--test", dest='training', default=True, action='store_false')
+    
+    # Occlusion dataset parameters
+    parser.add_argument("--train_dt_type", type=int, default=0, help="train dataset: 0=occluded, 1=holistic")
+    parser.add_argument("--test_dt_type", type=int, default=0, help="test dataset: 0=occluded, 1=holistic")
 
     args = parser.parse_args()
 

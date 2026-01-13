@@ -17,6 +17,40 @@ from .rstpreid import RSTPReid
 __factory = {'CUHK-PEDES': CUHKPEDES, 'ICFG-PEDES': ICFGPEDES, 'RSTPReid': RSTPReid}
 
 
+def change_path(dataset_name, pathss):
+    """Change path to occluded dataset path"""
+    if dataset_name == 'ICFG-PEDES':
+        if "train" in pathss:
+            occlusion_path = pathss.replace('train', 'train_occlusion_new')
+        elif "test" in pathss:
+            occlusion_path = pathss.replace('test', 'test_occlusion_new')
+        else:
+            occlusion_path = pathss
+    elif dataset_name == 'CUHK-PEDES':
+        if "cam_a" in pathss:
+            occlusion_path = pathss.replace('cam_a', 'cam_a_occlusion_new')
+        elif "cam_b" in pathss:
+            occlusion_path = pathss.replace('cam_b', 'cam_b_occlusion_new')
+        elif "CUHK01" in pathss:
+            occlusion_path = pathss.replace('CUHK01', 'CUHK01_occlusion_new')
+        elif "CUHK03" in pathss:
+            occlusion_path = pathss.replace('CUHK03', 'CUHK03_occlusion_new')
+        elif "Market" in pathss:
+            occlusion_path = pathss.replace('Market', 'Market_occlusion_new')
+        elif "test_query" in pathss:
+            occlusion_path = pathss.replace('test_query', 'test_query_occlusion_new')
+        elif "train_query" in pathss:
+            occlusion_path = pathss.replace('train_query', 'train_query_occlusion_new')            
+        else:
+            occlusion_path = pathss
+    elif dataset_name == 'RSTPReid':
+        if "imgs" in pathss:
+            occlusion_path = pathss.replace('imgs', 'imgs_occlusion_new')
+        else:
+            occlusion_path = pathss
+    return occlusion_path
+
+
 def build_transforms(img_size=(384, 128), aug=False, is_train=True):
     height, width = img_size
 
@@ -123,7 +157,7 @@ def build_dataloader(args, tranforms=None):
         # use test set as validate set
         ds = dataset.val if args.val_dataset == 'val' else dataset.test
         val_img_set = ImageDataset(ds['image_pids'], ds['img_paths'],
-                                   val_transforms)
+                                   val_transforms, args=args)
         val_txt_set = TextDataset(ds['caption_pids'],
                                   ds['captions'],
                                   text_length=args.text_length)
@@ -149,7 +183,7 @@ def build_dataloader(args, tranforms=None):
 
         ds = dataset.test
         test_img_set = ImageDataset(ds['image_pids'], ds['img_paths'],
-                                    test_transforms)
+                                    test_transforms, args=args)
         test_txt_set = TextDataset(ds['caption_pids'],
                                    ds['captions'],
                                    text_length=args.text_length)

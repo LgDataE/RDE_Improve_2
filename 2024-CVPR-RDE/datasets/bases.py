@@ -93,12 +93,20 @@ def tokenize(caption: str, tokenizer, text_length=77, truncate=True) -> torch.Lo
     result[:len(tokens)] = torch.tensor(tokens)
     return result
  
-
 class ImageDataset(Dataset):
-    def __init__(self, image_pids, img_paths, transform=None):
+    def __init__(self, image_pids, img_paths, transform=None, args=None):
         self.image_pids = image_pids
-        self.img_paths = img_paths
         self.transform = transform
+        self.args = args
+        
+        # Apply occlusion path transformation if needed
+        if args and hasattr(args, 'test_dt_type') and args.test_dt_type == 0:
+            from .build import change_path
+            print("Test Dataset: Occluded Dataset")
+            self.img_paths = [change_path(args.dataset_name, path) for path in img_paths]
+        else:
+            print("Test Dataset: Holistic Dataset")
+            self.img_paths = img_paths
         
     def __len__(self):
         return len(self.image_pids)
@@ -107,7 +115,7 @@ class ImageDataset(Dataset):
         pid, img_path = self.image_pids[index], self.img_paths[index]
         img = read_image(img_path)
         
- 
+
         if self.transform is not None:
             img = self.transform(img)
         return pid, img
@@ -147,8 +155,22 @@ class ImageTextDataset(Dataset):
         self.truncate = truncate
         self.txt_aug = args.txt_aug
         self.img_aug = args.img_aug
+        self.args = args
        
-        self.dataset, self.real_correspondences = inject_noisy_correspondence(dataset,args.noisy_rate,args.noisy_file)
+        # Apply occlusion path transformation if needed
+        if hasattr(args, 'train_dt_type') and args.train_dt_type == 0:
+            from .build import change_path
+            print("Train Dataset: Occluded Dataset")
+            dataset_with_occlusion = []
+            for item in dataset:
+                pid, image_id, img_path, caption = item
+                occlusion_path = change_path(args.dataset_name, img_path)
+                dataset_with_occlusion.append((pid, image_id, occlusion_path, caption))
+            self.dataset = dataset_with_occlusion
+        else:
+            print("Train Dataset: Holistic Dataset")
+            
+        self.dataset, self.real_correspondences = inject_noisy_correspondence(self.dataset,args.noisy_rate,args.noisy_file)
         self.tokenizer = SimpleTokenizer()
 
     def __len__(self):

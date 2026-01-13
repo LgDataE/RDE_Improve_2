@@ -57,6 +57,11 @@ class TexualEmbeddingLayer(nn.Module):
         self.linear = nn.Linear(input_dim, embed_dim)
         self.mlp = MLP(input_dim, embed_dim // 2, embed_dim, 2)
         self.ratio = ratio
+        self.reliability_head = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim // 2),
+            nn.ReLU(inplace=True),
+            nn.Linear(embed_dim // 2, 1)
+        )
 
     def forward(self, features, text, atten):
         # print(atten) 64 x 77 x 77
@@ -77,7 +82,11 @@ class TexualEmbeddingLayer(nn.Module):
         
         cap_emb = self.linear(features.half())
         features = self.mlp(features) + cap_emb
-        features = maxk_pool1d_var(features, 1, 1, lengths.to(cap_emb.device))  # max 
+
+        reliability = torch.sigmoid(self.reliability_head(features))
+        reliability = reliability.squeeze(-1)
+        reliability = reliability / (reliability.sum(dim=1, keepdim=True) + 1e-6)
+        features = (features * reliability.unsqueeze(-1)).sum(dim=1)
         
         return features.float()
 
@@ -89,6 +98,11 @@ class VisualEmbeddingLayer(nn.Module):
         self.ratio = ratio
         self.fc = nn.Linear(input_dim, embed_dim)
         self.mlp = MLP(input_dim, embed_dim // 2, embed_dim, 2)
+        self.reliability_head = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim // 2),
+            nn.ReLU(inplace=True),
+            nn.Linear(embed_dim // 2, 1)
+        )
     
     def forward(self, base_features, atten):
         k = int((atten.size(1)-1)*self.ratio) # 192
@@ -106,6 +120,10 @@ class VisualEmbeddingLayer(nn.Module):
         
         features = self.fc(base_features)
         features = self.mlp(base_features) + features 
-        features = maxk_pool1d_var(features, 1, 1, feat_lengths)   # max 
+
+        reliability = torch.sigmoid(self.reliability_head(features))
+        reliability = reliability.squeeze(-1)
+        reliability = reliability / (reliability.sum(dim=1, keepdim=True) + 1e-6)
+        features = (features * reliability.unsqueeze(-1)).sum(dim=1)
  
         return features.float()
