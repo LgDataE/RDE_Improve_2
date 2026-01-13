@@ -62,6 +62,7 @@ class TexualEmbeddingLayer(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(embed_dim // 2, 1)
         )
+        self.reliability_blend = 0.1
 
     def forward(self, features, text, atten):
         # print(atten) 64 x 77 x 77
@@ -73,20 +74,29 @@ class TexualEmbeddingLayer(nn.Module):
         atten[torch.arange(bs), :, 0] = -1 # first token 
         atten = atten[torch.arange(bs), text.argmax(dim=-1), :] # 64 x 77
         atten = atten * mask
+        atten = atten.masked_fill(mask == 0, -1e4)
         
-        atten_topK = atten.topk(dim=-1,k = k)[1].unsqueeze(-1).expand(bs,k,features.size(2)) # 64 x k x 512
+        k = max(1, k)
+        atten_topK_raw = atten.topk(dim=-1,k = k)[1]
+        atten_topK = atten_topK_raw.unsqueeze(-1).expand(bs,k,features.size(2)) # 64 x k x 512
         features = torch.gather(input=features,dim=1,index=atten_topK)  # 64 x k x 512
         features = l2norm(features, dim=-1)
 
         lengths = torch.Tensor([lengths[i] if lengths[i] < k else k for i in range(bs)]) # Keep at least K
+        lengths = lengths.to(features.device).long().clamp(min=1)
+        valid = torch.arange(k, device=features.device).unsqueeze(0) < lengths.unsqueeze(1)
         
         cap_emb = self.linear(features.half())
         features = self.mlp(features) + cap_emb
 
-        reliability = torch.sigmoid(self.reliability_head(features))
-        reliability = reliability.squeeze(-1)
-        reliability = reliability / (reliability.sum(dim=1, keepdim=True) + 1e-6)
-        features = (features * reliability.unsqueeze(-1)).sum(dim=1)
+        logits = self.reliability_head(features).squeeze(-1).float()
+        selected_atten = atten.gather(dim=1, index=atten_topK_raw).detach().float()
+        logits = logits + 0.1 * selected_atten
+        logits = logits.masked_fill(~valid, -1e4)
+        weights = torch.softmax(logits, dim=1).type_as(features)
+        features_weighted = (features * weights.unsqueeze(-1)).sum(dim=1)
+        features_max = maxk_pool1d_var(features, 1, 1, lengths)
+        features = (1.0 - self.reliability_blend) * features_max + self.reliability_blend * features_weighted
         
         return features.float()
 
@@ -103,15 +113,17 @@ class VisualEmbeddingLayer(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(embed_dim // 2, 1)
         )
+        self.reliability_blend = 0.1
     
     def forward(self, base_features, atten):
         k = int((atten.size(1)-1)*self.ratio) # 192
         
         bs = base_features.size(0)
         atten[torch.arange(bs), :, 0] = -1 # CLS token   
-        atten_topK = atten[:,0].topk(dim=-1,k = k)[1]
+        k = max(1, k)
+        atten_topK_raw = atten[:,0].topk(dim=-1,k = k)[1]
         
-        atten_topK = atten_topK.unsqueeze(-1).expand(bs, k, base_features.size(2)) # 64 x k x 512
+        atten_topK = atten_topK_raw.unsqueeze(-1).expand(bs, k, base_features.size(2)) # 64 x k x 512
         base_features = torch.gather(input=base_features,dim=1,index=atten_topK)  # 64 x k x 512
         base_features = l2norm(base_features, dim=-1) 
         base_features = base_features.half()
@@ -121,9 +133,12 @@ class VisualEmbeddingLayer(nn.Module):
         features = self.fc(base_features)
         features = self.mlp(base_features) + features 
 
-        reliability = torch.sigmoid(self.reliability_head(features))
-        reliability = reliability.squeeze(-1)
-        reliability = reliability / (reliability.sum(dim=1, keepdim=True) + 1e-6)
-        features = (features * reliability.unsqueeze(-1)).sum(dim=1)
+        logits = self.reliability_head(features).squeeze(-1).float()
+        selected_atten = atten[:, 0].gather(dim=1, index=atten_topK_raw).detach().float()
+        logits = logits + 0.1 * selected_atten
+        weights = torch.softmax(logits, dim=1).type_as(features)
+        features_weighted = (features * weights.unsqueeze(-1)).sum(dim=1)
+        features_max = maxk_pool1d_var(features, 1, 1, feat_lengths)
+        features = (1.0 - self.reliability_blend) * features_max + self.reliability_blend * features_weighted
  
         return features.float()

@@ -39,6 +39,20 @@ class RDE(nn.Module):
         else:
             exit()
         self.loss_type = loss_type
+
+    def _update_reliability_blend(self):
+        epoch = getattr(self, 'epoch', None)
+        warmup_epochs = 5
+        if epoch is None:
+            scale = 1.0
+        else:
+            scale = float(max(0.0, min(1.0, (epoch - 1) / warmup_epochs)))
+
+        for layer in (self.visul_emb_layer, self.texual_emb_layer):
+            if hasattr(layer, 'reliability_blend'):
+                if not hasattr(layer, '_reliability_blend_base'):
+                    layer._reliability_blend_base = float(layer.reliability_blend)
+                layer.reliability_blend = layer._reliability_blend_base * scale
  
     def _set_task(self):
         loss_names = self.args.loss_names
@@ -54,16 +68,19 @@ class RDE(nn.Module):
         return x[torch.arange(x.shape[0]), text.argmax(dim=-1)].float()
 
     def encode_image_tse(self, image):
+        self._update_reliability_blend()
         x,atten_i = self.base_model.encode_image(image)
         i_tse_f = self.visul_emb_layer(x, atten_i)   
         return i_tse_f.float()
  
     def encode_text_tse(self, text):
+        self._update_reliability_blend()
         x,atten_t = self.base_model.encode_text(text.long())
         t_tse_f = self.texual_emb_layer(x, text, atten_t)
         return t_tse_f.float()
 
     def compute_per_loss(self, batch):
+        self._update_reliability_blend()
         images = batch['images']
         caption_ids = batch['caption_ids']
         image_feats, atten_i, text_feats, atten_t = self.base_model(images, caption_ids)
@@ -90,6 +107,8 @@ class RDE(nn.Module):
     def forward(self, batch):
         ret = dict()
         ret.update({'temperature': 1 / self.logit_scale})
+
+        self._update_reliability_blend()
 
         images = batch['images']
         caption_ids = batch['caption_ids']
