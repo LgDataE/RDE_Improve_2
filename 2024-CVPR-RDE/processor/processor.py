@@ -266,6 +266,8 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer,
                 else:
                     top1 = evaluator.eval(model.eval())
 
+                tb_writer.add_scalar('R1', top1, epoch)
+
                 torch.cuda.empty_cache()
                 if best_top1 < top1:
                     best_top1 = top1
