@@ -63,6 +63,14 @@ class TexualEmbeddingLayer(nn.Module):
             nn.Linear(embed_dim // 2, 1)
         )
         self.reliability_blend = 0.1
+        self.topk_reliable_ratio = 0.7  # Keep top 70% most reliable tokens
+        self._init_reliability_head()
+
+    def _init_reliability_head(self):
+        """Zero-init last layer so initial reliability scores are uniform (~0.5 after sigmoid)"""
+        last_layer = self.reliability_head[-1]
+        nn.init.zeros_(last_layer.weight)
+        nn.init.zeros_(last_layer.bias)
 
     def forward(self, features, text, atten):
         # print(atten) 64 x 77 x 77
@@ -93,6 +101,14 @@ class TexualEmbeddingLayer(nn.Module):
         selected_atten = atten.gather(dim=1, index=atten_topK_raw).detach().float()
         logits = logits + 0.1 * selected_atten
         logits = logits.masked_fill(~valid, -1e4)
+        
+        # Top-K reliable filtering: only keep top 70% most reliable tokens
+        num_keep = max(1, int(k * self.topk_reliable_ratio))
+        topk_reliable_vals, topk_reliable_idx = logits.topk(num_keep, dim=1)
+        topk_reliable_mask = torch.zeros_like(logits, dtype=torch.bool)
+        topk_reliable_mask.scatter_(1, topk_reliable_idx, True)
+        logits = logits.masked_fill(~topk_reliable_mask, -1e4)
+        
         weights = torch.softmax(logits, dim=1).type_as(features)
         features_weighted = (features * weights.unsqueeze(-1)).sum(dim=1)
         features_max = maxk_pool1d_var(features, 1, 1, lengths)
@@ -114,6 +130,14 @@ class VisualEmbeddingLayer(nn.Module):
             nn.Linear(embed_dim // 2, 1)
         )
         self.reliability_blend = 0.1
+        self.topk_reliable_ratio = 0.7  # Keep top 70% most reliable patches
+        self._init_reliability_head()
+
+    def _init_reliability_head(self):
+        """Zero-init last layer so initial reliability scores are uniform (~0.5 after sigmoid)"""
+        last_layer = self.reliability_head[-1]
+        nn.init.zeros_(last_layer.weight)
+        nn.init.zeros_(last_layer.bias)
     
     def forward(self, base_features, atten):
         k = int((atten.size(1)-1)*self.ratio) # 192
@@ -136,6 +160,14 @@ class VisualEmbeddingLayer(nn.Module):
         logits = self.reliability_head(features).squeeze(-1).float()
         selected_atten = atten[:, 0].gather(dim=1, index=atten_topK_raw).detach().float()
         logits = logits + 0.1 * selected_atten
+        
+        # Top-K reliable filtering: only keep top 70% most reliable patches
+        num_keep = max(1, int(k * self.topk_reliable_ratio))
+        topk_reliable_vals, topk_reliable_idx = logits.topk(num_keep, dim=1)
+        topk_reliable_mask = torch.zeros_like(logits, dtype=torch.bool)
+        topk_reliable_mask.scatter_(1, topk_reliable_idx, True)
+        logits = logits.masked_fill(~topk_reliable_mask, -1e4)
+        
         weights = torch.softmax(logits, dim=1).type_as(features)
         features_weighted = (features * weights.unsqueeze(-1)).sum(dim=1)
         features_max = maxk_pool1d_var(features, 1, 1, feat_lengths)

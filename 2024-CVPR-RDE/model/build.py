@@ -41,18 +41,32 @@ class RDE(nn.Module):
         self.loss_type = loss_type
 
     def _update_reliability_blend(self):
+        """
+        Cosine annealing schedule for reliability_blend:
+        - Epoch 1-5 (warmup): ramp from 0 to blend_min (0.1)
+        - Epoch 6-60: cosine anneal from blend_min (0.1) to blend_max (0.3)
+        """
+        import math
         epoch = getattr(self, 'epoch', None)
         warmup_epochs = 5
+        anneal_epochs = 55  # epochs 6-60
+        blend_min = 0.1
+        blend_max = 0.3
+        
         if epoch is None:
-            scale = 1.0
+            blend = blend_min
+        elif epoch <= warmup_epochs:
+            # Linear warmup: 0 -> blend_min
+            blend = blend_min * (epoch / warmup_epochs)
         else:
-            scale = float(max(0.0, min(1.0, (epoch - 1) / warmup_epochs)))
+            # Cosine annealing: blend_min -> blend_max
+            progress = (epoch - warmup_epochs) / anneal_epochs
+            progress = min(1.0, progress)
+            blend = blend_min + (blend_max - blend_min) * 0.5 * (1 - math.cos(math.pi * progress))
 
         for layer in (self.visul_emb_layer, self.texual_emb_layer):
             if hasattr(layer, 'reliability_blend'):
-                if not hasattr(layer, '_reliability_blend_base'):
-                    layer._reliability_blend_base = float(layer.reliability_blend)
-                layer.reliability_blend = layer._reliability_blend_base * scale
+                layer.reliability_blend = blend
  
     def _set_task(self):
         loss_names = self.args.loss_names
