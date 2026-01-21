@@ -35,7 +35,7 @@ class CUHKPEDES(BaseDataset):
         self.dataset_dir = op.join(root, self.dataset_dir)
         self.img_dir = op.join(self.dataset_dir, 'imgs/')
 
-        self.anno_path = op.join(self.dataset_dir, 'reid_raw.json')
+        self.anno_path = self._resolve_anno_path()
         self._check_before_run()
 
         self.train_annos, self.test_annos, self.val_annos = self._split_anno(self.anno_path)
@@ -52,10 +52,38 @@ class CUHKPEDES(BaseDataset):
     def _split_anno(self, anno_path: str):
         train_annos, test_annos, val_annos = [], [], []
         annos = read_json(anno_path)
+        if annos:
+            sample_fp = annos[0].get('file_path', '')
+            if sample_fp:
+                sample_img_path = op.join(self.img_dir, sample_fp)
+                if not op.exists(sample_img_path):
+                    raise RuntimeError(
+                        "CUHK-PEDES annotation/image structure mismatch. "
+                        f"First sample image path not found: '{sample_img_path}'. "
+                        "Please ensure your dataset directory contains 'imgs/' with the same "
+                        "subfolders referenced by 'caption_all.json'."
+                    )
         for anno in annos:
-            if anno['split'] == 'train':
+            split = anno.get('split', None)
+            if split is None:
+                fp = str(anno.get('file_path', '')).lower()
+                if fp.startswith('train') or 'train_query' in fp:
+                    split = 'train'
+                elif fp.startswith('test') or 'test_query' in fp:
+                    split = 'test'
+                elif fp.startswith('val') or fp.startswith('valid') or 'val' in fp:
+                    split = 'val'
+            if split is None:
+                raise RuntimeError(
+                    "CUHK-PEDES annotation format mismatch: expected key 'split' in each item "
+                    "(train/test/val). Your 'caption_all.json' entries look like: "
+                    f"{list(anno.keys())}. Please use the processed annotation required by this repo "
+                    "or add 'split' field to each entry."
+                )
+
+            if split == 'train':
                 train_annos.append(anno)
-            elif anno['split'] == 'test':
+            elif split == 'test':
                 test_annos.append(anno)
             else:
                 val_annos.append(anno)
@@ -102,6 +130,22 @@ class CUHKPEDES(BaseDataset):
                 "captions": captions
             }
             return dataset, pid_container
+
+
+    def _resolve_anno_path(self):
+        candidates = [
+            'reid_raw_clean.json',
+            'reid_raw.json',
+            'caption_all_clean.json',
+            'caption_all.json',
+        ]
+        for name in candidates:
+            p = op.join(self.dataset_dir, name)
+            if op.exists(p):
+                return p
+        raise RuntimeError(
+            f"No CUHK-PEDES annotation json found under '{self.dataset_dir}'. Expected one of: {candidates}"
+        )
 
 
     def _check_before_run(self):
