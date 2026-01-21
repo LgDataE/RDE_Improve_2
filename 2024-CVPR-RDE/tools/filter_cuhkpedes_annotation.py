@@ -1,6 +1,12 @@
 import argparse
 import os
 import os.path as op
+import sys
+
+if __file__:
+    repo_root = op.abspath(op.join(op.dirname(__file__), '..'))
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
 
 from utils.iotools import read_json, write_json
 
@@ -45,6 +51,9 @@ def main():
     args = parser.parse_args()
 
     dataset_dir = op.join(args.root_dir, args.dataset_dirname)
+    if (not op.exists(op.join(dataset_dir, 'imgs'))) and op.exists(op.join(dataset_dir, args.dataset_dirname, 'imgs')):
+        dataset_dir = op.join(dataset_dir, args.dataset_dirname)
+
     img_dir = op.join(dataset_dir, 'imgs')
     if not op.exists(img_dir):
         raise RuntimeError(f"'{img_dir}' is not available")

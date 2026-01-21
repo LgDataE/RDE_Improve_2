@@ -32,7 +32,10 @@ class CUHKPEDES(BaseDataset):
 
     def __init__(self, root='', verbose=True):
         super(CUHKPEDES, self).__init__()
-        self.dataset_dir = op.join(root, self.dataset_dir)
+        dataset_dirname = self.dataset_dir
+        self.dataset_dir = op.join(root, dataset_dirname)
+        if (not op.exists(op.join(self.dataset_dir, 'imgs'))) and op.exists(op.join(self.dataset_dir, dataset_dirname, 'imgs')):
+            self.dataset_dir = op.join(self.dataset_dir, dataset_dirname)
         self.img_dir = op.join(self.dataset_dir, 'imgs/')
 
         self.anno_path = self._resolve_anno_path()
