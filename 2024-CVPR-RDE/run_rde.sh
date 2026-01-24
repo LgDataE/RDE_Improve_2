@@ -8,11 +8,6 @@ loss=TAL
 DATASET_NAME=CUHK-PEDES
 # CUHK-PEDES ICFG-PEDES RSTPReid
 
-python tools/filter_cuhkpedes_annotation.py \
-    --root_dir $root_dir \
-    --dataset_dirname $DATASET_NAME \
-    --output_name reid_raw_clean.json
-
 noisy_file=./noiseindex/${DATASET_NAME}_${noisy_rate}.npy
 CUDA_VISIBLE_DEVICES=0 \
     python train.py \

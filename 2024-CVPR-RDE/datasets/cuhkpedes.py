@@ -32,13 +32,10 @@ class CUHKPEDES(BaseDataset):
 
     def __init__(self, root='', verbose=True):
         super(CUHKPEDES, self).__init__()
-        dataset_dirname = self.dataset_dir
-        self.dataset_dir = op.join(root, dataset_dirname)
-        if (not op.exists(op.join(self.dataset_dir, 'imgs'))) and op.exists(op.join(self.dataset_dir, dataset_dirname, 'imgs')):
-            self.dataset_dir = op.join(self.dataset_dir, dataset_dirname)
+        self.dataset_dir = op.join(root, self.dataset_dir)
         self.img_dir = op.join(self.dataset_dir, 'imgs/')
 
-        self.anno_path = self._resolve_anno_path()
+        self.anno_path = op.join(self.dataset_dir, 'reid_raw.json')
         self._check_before_run()
 
         self.train_annos, self.test_annos, self.val_annos = self._split_anno(self.anno_path)
@@ -133,22 +130,6 @@ class CUHKPEDES(BaseDataset):
                 "captions": captions
             }
             return dataset, pid_container
-
-
-    def _resolve_anno_path(self):
-        candidates = [
-            'reid_raw_clean.json',
-            'reid_raw.json',
-            'caption_all_clean.json',
-            'caption_all.json',
-        ]
-        for name in candidates:
-            p = op.join(self.dataset_dir, name)
-            if op.exists(p):
-                return p
-        raise RuntimeError(
-            f"No CUHK-PEDES annotation json found under '{self.dataset_dir}'. Expected one of: {candidates}"
-        )
 
 
     def _check_before_run(self):
