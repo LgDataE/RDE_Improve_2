@@ -114,7 +114,14 @@ class TexualEmbeddingLayer(nn.Module):
         features_max = maxk_pool1d_var(features, 1, 1, lengths)
         features = (1.0 - self.reliability_blend) * features_max + self.reliability_blend * features_weighted
         
-        return features.float()
+        # Compute entropy of reliability weights for auxiliary loss (end-to-end training)
+        # entropy = -sum(w * log(w)), normalized by log(num_keep) to be in [0, 1]
+        weights_for_entropy = weights.clamp(min=1e-8)
+        entropy = -(weights_for_entropy * weights_for_entropy.log()).sum(dim=1)
+        max_entropy = torch.log(torch.tensor(num_keep, dtype=torch.float, device=weights.device))
+        normalized_entropy = entropy / max_entropy.clamp(min=1e-8)
+        
+        return features.float(), normalized_entropy
 
 class VisualEmbeddingLayer(nn.Module):
     def __init__(self, input_dim=512, embed_dim=1024,ratio=0.3):
@@ -172,5 +179,12 @@ class VisualEmbeddingLayer(nn.Module):
         features_weighted = (features * weights.unsqueeze(-1)).sum(dim=1)
         features_max = maxk_pool1d_var(features, 1, 1, feat_lengths)
         features = (1.0 - self.reliability_blend) * features_max + self.reliability_blend * features_weighted
+        
+        # Compute entropy of reliability weights for auxiliary loss (end-to-end training)
+        # entropy = -sum(w * log(w)), normalized by log(num_keep) to be in [0, 1]
+        weights_for_entropy = weights.clamp(min=1e-8)
+        entropy = -(weights_for_entropy * weights_for_entropy.log()).sum(dim=1)
+        max_entropy = torch.log(torch.tensor(num_keep, dtype=torch.float, device=weights.device))
+        normalized_entropy = entropy / max_entropy.clamp(min=1e-8)
  
-        return features.float()
+        return features.float(), normalized_entropy
