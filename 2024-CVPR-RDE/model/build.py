@@ -84,13 +84,13 @@ class RDE(nn.Module):
     def encode_image_tse(self, image):
         self._update_reliability_blend()
         x,atten_i = self.base_model.encode_image(image)
-        i_tse_f, _ = self.visul_emb_layer(x, atten_i)   
+        i_tse_f = self.visul_emb_layer(x, atten_i)   
         return i_tse_f.float()
  
     def encode_text_tse(self, text):
         self._update_reliability_blend()
         x,atten_t = self.base_model.encode_text(text.long())
-        t_tse_f, _ = self.texual_emb_layer(x, text, atten_t)
+        t_tse_f = self.texual_emb_layer(x, text, atten_t)
         return t_tse_f.float()
 
     def compute_per_loss(self, batch):
@@ -102,8 +102,8 @@ class RDE(nn.Module):
         # i_feats = image_feats.float() # for CLIP ResNet visual model
         t_feats = text_feats[torch.arange(text_feats.shape[0]), caption_ids.argmax(dim=-1)].float()
 
-        i_tse_f, _ = self.visul_emb_layer(image_feats, atten_i)
-        t_tse_f, _ = self.texual_emb_layer(text_feats, caption_ids, atten_t)
+        i_tse_f = self.visul_emb_layer(image_feats, atten_i)
+        t_tse_f = self.texual_emb_layer(text_feats, caption_ids, atten_t)
 
         lossA, simsA = objectives.compute_per_loss(i_feats, t_feats, batch['pids'], \
                                                     tau=self.args.tau, \
@@ -131,8 +131,8 @@ class RDE(nn.Module):
         # i_feats = image_feats.float() # for CLIP ResNet visual model
         t_feats = text_feats[torch.arange(text_feats.shape[0]), caption_ids.argmax(dim=-1)].float()
 
-        i_tse_f, i_entropy = self.visul_emb_layer(image_feats, atten_i)
-        t_tse_f, t_entropy = self.texual_emb_layer(text_feats, caption_ids, atten_t)
+        i_tse_f = self.visul_emb_layer(image_feats, atten_i)
+        t_tse_f = self.texual_emb_layer(text_feats, caption_ids, atten_t)
             
         label_hat = batch['label_hat'].to(i_feats.device) 
      
@@ -141,14 +141,6 @@ class RDE(nn.Module):
                                                 loss_type=self.loss_type,logit_scale=self.logit_scale)
         ret.update({'bge_loss':loss1})
         ret.update({'tse_loss':loss2})
-        
-        # End-to-end auxiliary loss for reliability head
-        # Clean pairs (high label_hat) should have LOW entropy (focused attention)
-        # Noisy pairs (low label_hat) should have HIGH entropy (diffuse attention)
-        # Loss: label_hat * entropy encourages clean pairs to focus
-        aux_entropy_loss = (label_hat * (i_entropy + t_entropy) / 2).mean()
-        aux_loss_weight = 0.1 * self.visul_emb_layer.reliability_blend  # Scale with blend
-        ret.update({'aux_loss': aux_loss_weight * aux_entropy_loss})
   
         return ret
 

@@ -134,40 +134,8 @@ def get_loss(model, data_loader):
             if i % 100 == 0:
                 logger.info(f'compute loss batch {i}')
 
-    # Sanitize loss tensors (NaN/Inf) before normalization/GMM
-    finite_A = torch.isfinite(lossA)
-    if not finite_A.any():
-        logger.warning('All values in lossA are non-finite; set lossA to zeros for GMM.')
-        lossA = torch.zeros_like(lossA)
-    else:
-        num_bad_A = (~finite_A).sum().item()
-        if num_bad_A > 0:
-            logger.warning(f'Non-finite detected in lossA: {num_bad_A} values')
-        median_A = lossA[finite_A].median()
-        lossA = torch.where(finite_A, lossA, median_A)
-
-    finite_B = torch.isfinite(lossB)
-    if not finite_B.any():
-        logger.warning('All values in lossB are non-finite; set lossB to zeros for GMM.')
-        lossB = torch.zeros_like(lossB)
-    else:
-        num_bad_B = (~finite_B).sum().item()
-        if num_bad_B > 0:
-            logger.warning(f'Non-finite detected in lossB: {num_bad_B} values')
-        median_B = lossB[finite_B].median()
-        lossB = torch.where(finite_B, lossB, median_B)
-
-    # Normalize losses, handle edge case where all losses are equal (avoid division by zero)
-    min_A, max_A = lossA.min(), lossA.max()
-    min_B, max_B = lossB.min(), lossB.max()
-    range_A = (max_A - min_A).clamp(min=1e-8)
-    range_B = (max_B - min_B).clamp(min=1e-8)
-    losses_A = (lossA - min_A) / range_A
-    losses_B = (lossB - min_B) / range_B
-
-    # Final guard: ensure finite for sklearn
-    losses_A = torch.nan_to_num(losses_A, nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
-    losses_B = torch.nan_to_num(losses_B, nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
+    losses_A = (lossA-lossA.min())/(lossA.max()-lossA.min())    
+    losses_B = (lossB-lossB.min())/(lossB.max()-lossB.min())
     
     input_loss_A = losses_A.reshape(-1,1) 
     input_loss_B = losses_B.reshape(-1,1)
@@ -182,14 +150,12 @@ def get_loss(model, data_loader):
         gmm_A = GaussianMixture(n_components=2, max_iter=10, tol=1e-2, reg_covar=5e-4)
         gmm_B = GaussianMixture(n_components=2, max_iter=10, tol=1e-2, reg_covar=5e-4)
 
-    xA = np.nan_to_num(input_loss_A.cpu().numpy(), nan=0.0, posinf=1.0, neginf=0.0)
-    xB = np.nan_to_num(input_loss_B.cpu().numpy(), nan=0.0, posinf=1.0, neginf=0.0)
-    gmm_A.fit(xA)
-    prob_A = gmm_A.predict_proba(xA)
+    gmm_A.fit(input_loss_A.cpu().numpy())
+    prob_A = gmm_A.predict_proba(input_loss_A.cpu().numpy())
     prob_A = prob_A[:, gmm_A.means_.argmin()]
 
-    gmm_B.fit(xB)
-    prob_B = gmm_B.predict_proba(xB)
+    gmm_B.fit(input_loss_B.cpu().numpy())
+    prob_B = gmm_B.predict_proba(input_loss_B.cpu().numpy())
     prob_B = prob_B[:, gmm_B.means_.argmin()]
  
  
@@ -219,7 +185,6 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer,
         "loss": AverageMeter(),
         "bge_loss": AverageMeter(),
         "tse_loss": AverageMeter(),
-        "aux_loss": AverageMeter(),
         "id_loss": AverageMeter(),
         "img_acc": AverageMeter(),
         "txt_acc": AverageMeter(),
@@ -263,8 +228,6 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer,
             meters['loss'].update(total_loss.item(), batch_size)
             meters['bge_loss'].update(ret.get('bge_loss', 0), batch_size)
             meters['tse_loss'].update(ret.get('tse_loss', 0), batch_size)
-            if 'aux_loss' in ret:
-                meters['aux_loss'].update(ret.get('aux_loss', 0), batch_size)
          
             optimizer.zero_grad()
             total_loss.backward()
