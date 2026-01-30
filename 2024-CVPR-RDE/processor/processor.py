@@ -134,8 +134,19 @@ def get_loss(model, data_loader):
             if i % 100 == 0:
                 logger.info(f'compute loss batch {i}')
 
-    losses_A = (lossA-lossA.min())/(lossA.max()-lossA.min())    
-    losses_B = (lossB-lossB.min())/(lossB.max()-lossB.min())
+    # Check for NaN values and replace with median
+    if torch.isnan(lossA).any():
+        logger.warning(f'NaN detected in lossA: {torch.isnan(lossA).sum()} values')
+        lossA = torch.nan_to_num(lossA, nan=lossA[~torch.isnan(lossA)].median().item())
+    if torch.isnan(lossB).any():
+        logger.warning(f'NaN detected in lossB: {torch.isnan(lossB).sum()} values')
+        lossB = torch.nan_to_num(lossB, nan=lossB[~torch.isnan(lossB)].median().item())
+    
+    # Normalize losses, handle edge case where all losses are equal (avoid division by zero)
+    range_A = lossA.max() - lossA.min()
+    range_B = lossB.max() - lossB.min()
+    losses_A = (lossA - lossA.min()) / range_A.clamp(min=1e-8)
+    losses_B = (lossB - lossB.min()) / range_B.clamp(min=1e-8)
     
     input_loss_A = losses_A.reshape(-1,1) 
     input_loss_B = losses_B.reshape(-1,1)

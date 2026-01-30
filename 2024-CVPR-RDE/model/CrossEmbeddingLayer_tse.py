@@ -118,8 +118,9 @@ class TexualEmbeddingLayer(nn.Module):
         # entropy = -sum(w * log(w)), normalized by log(num_keep) to be in [0, 1]
         weights_for_entropy = weights.clamp(min=1e-8)
         entropy = -(weights_for_entropy * weights_for_entropy.log()).sum(dim=1)
-        max_entropy = torch.log(torch.tensor(num_keep, dtype=torch.float, device=weights.device))
-        normalized_entropy = entropy / max_entropy.clamp(min=1e-8)
+        max_entropy = max(1.0, float(num_keep))  # Avoid log(1)=0
+        max_entropy = torch.log(torch.tensor(max_entropy, dtype=torch.float, device=weights.device)).clamp(min=1e-8)
+        normalized_entropy = (entropy / max_entropy).clamp(0, 1)  # Ensure [0, 1] range
         
         return features.float(), normalized_entropy
 
@@ -184,7 +185,8 @@ class VisualEmbeddingLayer(nn.Module):
         # entropy = -sum(w * log(w)), normalized by log(num_keep) to be in [0, 1]
         weights_for_entropy = weights.clamp(min=1e-8)
         entropy = -(weights_for_entropy * weights_for_entropy.log()).sum(dim=1)
-        max_entropy = torch.log(torch.tensor(num_keep, dtype=torch.float, device=weights.device))
-        normalized_entropy = entropy / max_entropy.clamp(min=1e-8)
+        max_entropy = max(1.0, float(num_keep))  # Avoid log(1)=0
+        max_entropy = torch.log(torch.tensor(max_entropy, dtype=torch.float, device=weights.device)).clamp(min=1e-8)
+        normalized_entropy = (entropy / max_entropy).clamp(0, 1)  # Ensure [0, 1] range
  
         return features.float(), normalized_entropy
