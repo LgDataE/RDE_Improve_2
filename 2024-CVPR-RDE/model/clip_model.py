@@ -366,6 +366,9 @@ class CLIP(nn.Module):
         self.text_projection = nn.Parameter(torch.empty(transformer_width, embed_dim))
         # self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
+        self.soft_prompt_len = 0
+        self.soft_prompt_embeddings = None
+
         self.initialize_parameters()
 
     def initialize_parameters(self):
@@ -397,6 +400,22 @@ class CLIP(nn.Module):
         if self.text_projection is not None:
             nn.init.normal_(self.text_projection, std=self.transformer.width ** -0.5)
 
+    def init_soft_prompt(self, soft_prompt_len: int):
+        soft_prompt_len = int(soft_prompt_len)
+        if soft_prompt_len <= 0:
+            self.soft_prompt_len = 0
+            self.soft_prompt_embeddings = None
+            return
+        if soft_prompt_len >= self.context_length:
+            raise ValueError(f"soft_prompt_len must be < context_length ({self.context_length})")
+
+        mask_token_id = self.vocab_size - 3
+        with torch.no_grad():
+            init = self.token_embedding.weight[mask_token_id].detach().float().clone()
+        prompt = init.repeat(soft_prompt_len, 1)
+        self.soft_prompt_len = soft_prompt_len
+        self.soft_prompt_embeddings = nn.Parameter(prompt)
+
     def build_attention_mask(self):
         # lazily create causal attention mask, with full attention between the vision tokens
         # pytorch uses additive attention mask; fill with -inf
@@ -414,6 +433,13 @@ class CLIP(nn.Module):
 
     def encode_text(self, text):
         x = self.token_embedding(text).type(self.dtype)  # [batch_size, n_ctx, d_model]
+
+        if self.soft_prompt_embeddings is not None:
+            n = self.soft_prompt_embeddings.shape[0]
+            if n > 0 and x.shape[1] >= 1 + n:
+                prompt = self.soft_prompt_embeddings.to(dtype=x.dtype, device=x.device)
+                prompt = prompt.unsqueeze(0).expand(x.shape[0], -1, -1)
+                x = torch.cat([x[:, :1, :], prompt, x[:, 1 + n:, :]], dim=1)
 
         x = x + self.positional_embedding.type(self.dtype)
         x = x.permute(1, 0, 2)  # NLD -> LND
@@ -511,7 +537,7 @@ def convert_weights(model: nn.Module):
     model.apply(_convert_weights_to_fp16)
 
 
-def build_CLIP_from_openai_pretrained(name: str, image_size: Union[int, Tuple[int, int]], stride_size: int, jit: bool = False, download_root: str = None):
+def build_CLIP_from_openai_pretrained(name: str, image_size: Union[int, Tuple[int, int]], stride_size: int, jit: bool = False, download_root: str = None, soft_prompt_len: int = 0):
     """Load a CLIP model
 
     Parameters
@@ -602,6 +628,9 @@ def build_CLIP_from_openai_pretrained(name: str, image_size: Union[int, Tuple[in
 
     # resize modified pos embedding
     model.load_param(state_dict)
+
+    if soft_prompt_len is not None and int(soft_prompt_len) > 0:
+        model.init_soft_prompt(int(soft_prompt_len))
     return model, model_cfg
 
 

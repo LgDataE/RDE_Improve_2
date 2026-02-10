@@ -69,7 +69,13 @@ class Evaluator():
         for pid, caption in self.txt_loader:
             caption = caption.to(device)
             with torch.no_grad():
-                text_feat = model.encode_text(caption).cpu()
+                if caption.dim() == 3:
+                    b, t, l = caption.shape
+                    caption_flat = caption.reshape(b * t, l)
+                    text_feat = model.encode_text(caption_flat)
+                    text_feat = text_feat.reshape(b, t, -1).mean(dim=1).cpu()
+                else:
+                    text_feat = model.encode_text(caption).cpu()
             qids.append(pid.view(-1)) # flatten 
             qfeats.append(text_feat)
         qids = torch.cat(qids, 0)
@@ -95,7 +101,13 @@ class Evaluator():
         for pid, caption in self.txt_loader:
             caption = caption.to(device)
             with torch.no_grad():
-                text_feat = model.encode_text_tse(caption).cpu()
+                if caption.dim() == 3:
+                    b, t, l = caption.shape
+                    caption_flat = caption.reshape(b * t, l)
+                    text_feat = model.encode_text_tse(caption_flat)
+                    text_feat = text_feat.reshape(b, t, -1).mean(dim=1).cpu()
+                else:
+                    text_feat = model.encode_text_tse(caption).cpu()
             qids.append(pid.view(-1)) # flatten 
             qfeats.append(text_feat)
         qids = torch.cat(qids, 0)

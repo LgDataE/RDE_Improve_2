@@ -14,6 +14,10 @@ def build_optimizer(args, model):
         lr = args.lr
         weight_decay = args.weight_decay
 
+        if "soft_prompt_embeddings" in key:
+            lr = args.lr * args.lr_factor
+            weight_decay = 0.0
+
         if "cross" in key:
             # use large learning rate for random initialized cross modal module
             lr =  args.lr * args.lr_factor # default 5.0

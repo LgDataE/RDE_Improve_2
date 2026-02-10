@@ -160,7 +160,8 @@ def build_dataloader(args, tranforms=None):
                                    val_transforms, args=args)
         val_txt_set = TextDataset(ds['caption_pids'],
                                   ds['captions'],
-                                  text_length=args.text_length)
+                                  text_length=args.text_length,
+                                  args=args)
 
         val_img_loader = DataLoader(val_img_set,
                                     batch_size=args.batch_size,
@@ -186,7 +187,8 @@ def build_dataloader(args, tranforms=None):
                                     test_transforms, args=args)
         test_txt_set = TextDataset(ds['caption_pids'],
                                    ds['captions'],
-                                   text_length=args.text_length)
+                                   text_length=args.text_length,
+                                   args=args)
 
         test_img_loader = DataLoader(test_img_set,
                                      batch_size=args.test_batch_size,

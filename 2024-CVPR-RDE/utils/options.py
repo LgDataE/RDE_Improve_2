@@ -26,6 +26,14 @@ def get_args():
     parser.add_argument("--img_aug", default=False, action='store_true')
     parser.add_argument("--txt_aug", default=False, action='store_true')
 
+    parser.add_argument("--prompt_template", type=str, default="")
+    parser.add_argument("--prompt_templates", type=str, nargs='*', default=[])
+    parser.add_argument("--prompt_ensemble", default=False, action='store_true')
+    parser.add_argument("--prompt_train_random", default=False, action='store_true')
+
+    parser.add_argument("--soft_prompt", default=False, action='store_true')
+    parser.add_argument("--soft_prompt_len", type=int, default=0)
+
     ## cross modal transfomer setting
     parser.add_argument("--cmt_depth", type=int, default=4, help="cross modal transformer self attn layers")
     parser.add_argument("--masked_token_rate", type=float, default=0.8, help="masked token rate for mlm task")

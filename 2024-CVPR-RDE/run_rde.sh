@@ -25,4 +25,3 @@ CUDA_VISIBLE_DEVICES=0 \
     --dataset_name $DATASET_NAME \
     --loss_names ${loss}+sr${select_ratio}_tau${tau}_margin${margin}_n${noisy_rate}  \
     --num_epoch 60 
- 

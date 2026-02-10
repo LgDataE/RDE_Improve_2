@@ -77,8 +77,8 @@ class BaseDataset(object):
 
 
 def tokenize(caption: str, tokenizer, text_length=77, truncate=True) -> torch.LongTensor:
-    sot_token = tokenizer.encoder["<|startoftext|>"]
-    eot_token = tokenizer.encoder["<|endoftext|>"]
+    sot_token = len(tokenizer.encoder) - 2
+    eot_token = len(tokenizer.encoder) - 1
     tokens = [sot_token] + tokenizer.encode(caption) + [eot_token]
 
     result = torch.zeros(text_length, dtype=torch.long)
@@ -92,7 +92,51 @@ def tokenize(caption: str, tokenizer, text_length=77, truncate=True) -> torch.Lo
             )
     result[:len(tokens)] = torch.tensor(tokens)
     return result
- 
+
+
+DEFAULT_PROMPT_TEMPLATES = [
+    "a photo of a person. {caption}",
+    "a photo of the person. {caption}",
+    "a description of a person: {caption}",
+    "a photo of a pedestrian. {caption}",
+    "a person in the photo. {caption}",
+]
+
+
+def get_prompt_templates(args):
+    if args is None:
+        return []
+    if hasattr(args, 'prompt_templates') and args.prompt_templates:
+        return list(args.prompt_templates)
+    if hasattr(args, 'prompt_template') and args.prompt_template:
+        return [args.prompt_template]
+    return []
+
+
+def apply_prompt_template(caption: str, template: str):
+    if template is None or template == "":
+        return caption
+    if "{caption}" in template:
+        return template.replace("{caption}", caption)
+    return template + " " + caption
+
+
+def prepend_soft_prompt_tokens(text: str, args):
+    if args is None:
+        return text
+    if getattr(args, 'soft_prompt', False) and getattr(args, 'soft_prompt_len', 0) > 0:
+        prefix = ("<|mask|> " * int(args.soft_prompt_len)).strip()
+        if prefix:
+            return prefix + " " + text
+    return text
+
+
+def build_prompted_text(caption: str, args, template: str):
+    text = apply_prompt_template(caption, template)
+    text = prepend_soft_prompt_tokens(text, args)
+    return text
+
+
 class ImageDataset(Dataset):
     def __init__(self, image_pids, img_paths, transform=None, args=None):
         self.image_pids = image_pids
@@ -126,11 +170,13 @@ class TextDataset(Dataset):
                  caption_pids,
                  captions,
                  text_length: int = 77,
-                 truncate: bool = True):
+                 truncate: bool = True,
+                 args=None):
         self.caption_pids = caption_pids
         self.captions = captions
         self.text_length = text_length
         self.truncate = truncate
+        self.args = args
         self.tokenizer = SimpleTokenizer()
   
     def __len__(self):
@@ -138,9 +184,20 @@ class TextDataset(Dataset):
 
     def __getitem__(self, index):
         pid, caption = self.caption_pids[index], self.captions[index]
-        caption = tokenize(caption, tokenizer=self.tokenizer, text_length=self.text_length, truncate=self.truncate)
+        if self.args is not None and getattr(self.args, 'prompt_ensemble', False):
+            templates = get_prompt_templates(self.args)
+            if not templates:
+                templates = DEFAULT_PROMPT_TEMPLATES
+            caption_tokens = torch.stack([
+                tokenize(build_prompted_text(caption, self.args, t), tokenizer=self.tokenizer, text_length=self.text_length, truncate=self.truncate)
+                for t in templates
+            ], dim=0)
+        else:
+            templates = get_prompt_templates(self.args)
+            template = templates[0] if templates else ""
+            caption_tokens = tokenize(build_prompted_text(caption, self.args, template), tokenizer=self.tokenizer, text_length=self.text_length, truncate=self.truncate)
 
-        return pid, caption
+        return pid, caption_tokens
 
 
 class ImageTextDataset(Dataset):
@@ -183,7 +240,14 @@ class ImageTextDataset(Dataset):
         if self.transform is not None:
             img = self.transform(img)
         
-        caption_tokens = tokenize(caption, tokenizer=self.tokenizer, text_length=self.text_length, truncate=self.truncate)
+        templates = get_prompt_templates(self.args)
+        template = ""
+        if templates:
+            if getattr(self.args, 'prompt_train_random', False) and len(templates) > 1:
+                template = random.choice(templates)
+            else:
+                template = templates[0]
+        caption_tokens = tokenize(build_prompted_text(caption, self.args, template), tokenizer=self.tokenizer, text_length=self.text_length, truncate=self.truncate)
         if self.txt_aug:
             caption_tokens = self.txt_data_aug(caption_tokens.cpu().numpy())
         

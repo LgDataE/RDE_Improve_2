@@ -20,7 +20,12 @@ class RDE(nn.Module):
         self.num_classes = num_classes
         self._set_task()
 
-        self.base_model, base_cfg = build_CLIP_from_openai_pretrained(args.pretrain_choice, args.img_size, args.stride_size)
+        soft_prompt_len = 0
+        if getattr(args, 'soft_prompt', False) and getattr(args, 'soft_prompt_len', 0) > 0:
+            soft_prompt_len = int(args.soft_prompt_len)
+        self.base_model, base_cfg = build_CLIP_from_openai_pretrained(
+            args.pretrain_choice, args.img_size, args.stride_size, soft_prompt_len=soft_prompt_len
+        )
         self.embed_dim = base_cfg['embed_dim']
 
         self.logit_scale = torch.ones([]) * (1 / args.temperature) 
