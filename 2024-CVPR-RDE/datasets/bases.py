@@ -95,11 +95,9 @@ def tokenize(caption: str, tokenizer, text_length=77, truncate=True) -> torch.Lo
 
 
 DEFAULT_PROMPT_TEMPLATES = [
+    "{caption}",
+    "a person. {caption}",
     "a photo of a person. {caption}",
-    "a photo of the person. {caption}",
-    "a description of a person: {caption}",
-    "a photo of a pedestrian. {caption}",
-    "a person in the photo. {caption}",
 ]
 
 

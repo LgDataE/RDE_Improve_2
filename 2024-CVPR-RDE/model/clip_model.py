@@ -409,10 +409,13 @@ class CLIP(nn.Module):
         if soft_prompt_len >= self.context_length:
             raise ValueError(f"soft_prompt_len must be < context_length ({self.context_length})")
 
-        mask_token_id = self.vocab_size - 3
         with torch.no_grad():
-            init = self.token_embedding.weight[mask_token_id].detach().float().clone()
-        prompt = init.repeat(soft_prompt_len, 1)
+            # use mean of a range of common token embeddings for a better init
+            sample_ids = list(range(1000, 2000))
+            init = self.token_embedding.weight[sample_ids].detach().float().mean(dim=0)
+        prompt = init.unsqueeze(0).repeat(soft_prompt_len, 1)
+        # add small noise so each prompt position is slightly different
+        prompt = prompt + torch.randn_like(prompt) * 0.01
         self.soft_prompt_len = soft_prompt_len
         self.soft_prompt_embeddings = nn.Parameter(prompt)
 
