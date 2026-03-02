@@ -30,8 +30,21 @@ class RDE(nn.Module):
 
         self.logit_scale = torch.ones([]) * (1 / args.temperature) 
  
-        self.visul_emb_layer = VisualEmbeddingLayer(ratio=args.select_ratio)
-        self.texual_emb_layer = TexualEmbeddingLayer(ratio=args.select_ratio)
+        tse_pooling = getattr(args, 'tse_pooling', 'max')
+        tse_lse_tau = getattr(args, 'tse_lse_tau', 0.1)
+        tse_gem_p = getattr(args, 'tse_gem_p', 3.0)
+        self.visul_emb_layer = VisualEmbeddingLayer(
+            ratio=args.select_ratio,
+            pooling=tse_pooling,
+            lse_tau=tse_lse_tau,
+            gem_p=tse_gem_p,
+        )
+        self.texual_emb_layer = TexualEmbeddingLayer(
+            ratio=args.select_ratio,
+            pooling=tse_pooling,
+            lse_tau=tse_lse_tau,
+            gem_p=tse_gem_p,
+        )
  
         if 'TAL' in self.current_task:
             loss_type = 'TAL'

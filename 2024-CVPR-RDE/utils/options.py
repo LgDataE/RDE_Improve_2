@@ -8,6 +8,9 @@ def get_args():
     parser.add_argument("--noisy_file", default='', type=str)
     parser.add_argument("--tau", default=0.015, type=float)
     parser.add_argument("--select_ratio", default=0.3, type=float)
+    parser.add_argument("--tse_pooling", type=str, default="max", choices=["max", "lse", "gem"])
+    parser.add_argument("--tse_lse_tau", type=float, default=0.1)
+    parser.add_argument("--tse_gem_p", type=float, default=3.0)
     parser.add_argument("--margin", default=0.1, type=float)
 
     ######################## general settings ########################

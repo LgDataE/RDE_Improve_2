@@ -31,6 +31,40 @@ def maxk(x, dim, k):
     return x.gather(dim, index)
 
 
+def lse_pool1d_var(x, dim, lengths, tau=0.1):
+    results = list()
+    lengths = list(lengths.cpu().numpy())
+    lengths = [int(x) for x in lengths]
+    tau = float(tau)
+    if tau <= 0:
+        tau = 1e-6
+    for idx, length in enumerate(lengths):
+        x_i = x[idx, :length, :].float() / tau
+        pooled = torch.logsumexp(x_i, dim - 1) * tau
+        results.append(pooled)
+    results = torch.stack(results, dim=0)
+    return results
+
+
+def gem_pool1d_var(x, dim, lengths, p=3.0, eps=1e-6):
+    results = list()
+    lengths = list(lengths.cpu().numpy())
+    lengths = [int(x) for x in lengths]
+    p = float(p)
+    if p <= 0:
+        p = 1.0
+    for idx, length in enumerate(lengths):
+        x_i = x[idx, :length, :].float()
+        x_abs = x_i.abs().clamp(min=eps)
+        x_pow = x_i.sign() * x_abs.pow(p)
+        pooled = x_pow.mean(dim - 1)
+        pooled_abs = pooled.abs().clamp(min=eps)
+        pooled = pooled.sign() * pooled_abs.pow(1.0 / p)
+        results.append(pooled)
+    results = torch.stack(results, dim=0)
+    return results
+
+
 class MLP(nn.Module):
     """ Very simple multi-layer perceptron (also called FFN) from https://github.com/woodfrog/vse_infty, thanks!"""
 
@@ -51,12 +85,15 @@ class MLP(nn.Module):
         return x
  
 class TexualEmbeddingLayer(nn.Module):
-    def __init__(self, input_dim=512, embed_dim=1024,ratio=0.3):
+    def __init__(self, input_dim=512, embed_dim=1024,ratio=0.3, pooling='max', lse_tau=0.1, gem_p=3.0):
         super(TexualEmbeddingLayer, self).__init__()
         self.embed_dim= embed_dim
         self.linear = nn.Linear(input_dim, embed_dim)
         self.mlp = MLP(input_dim, embed_dim // 2, embed_dim, 2)
         self.ratio = ratio
+        self.pooling = pooling
+        self.lse_tau = lse_tau
+        self.gem_p = gem_p
         self.reliability_head = nn.Sequential(
             nn.Linear(embed_dim, embed_dim // 2),
             nn.ReLU(inplace=True),
@@ -111,19 +148,29 @@ class TexualEmbeddingLayer(nn.Module):
         
         weights = torch.softmax(logits, dim=1).type_as(features)
         features_weighted = (features * weights.unsqueeze(-1)).sum(dim=1)
-        features_max = maxk_pool1d_var(features, 1, 1, lengths)
+        if self.pooling == 'max':
+            features_max = maxk_pool1d_var(features, 1, 1, lengths)
+        elif self.pooling == 'lse':
+            features_max = lse_pool1d_var(features, 1, lengths, tau=self.lse_tau)
+        elif self.pooling == 'gem':
+            features_max = gem_pool1d_var(features, 1, lengths, p=self.gem_p)
+        else:
+            features_max = maxk_pool1d_var(features, 1, 1, lengths)
         features = (1.0 - self.reliability_blend) * features_max + self.reliability_blend * features_weighted
         
         return features.float()
 
 class VisualEmbeddingLayer(nn.Module):
-    def __init__(self, input_dim=512, embed_dim=1024,ratio=0.3):
+    def __init__(self, input_dim=512, embed_dim=1024,ratio=0.3, pooling='max', lse_tau=0.1, gem_p=3.0):
         super(VisualEmbeddingLayer, self).__init__()
         self.embed_dim= embed_dim
         self.linear = nn.Linear(input_dim, embed_dim)
         self.ratio = ratio
         self.fc = nn.Linear(input_dim, embed_dim)
         self.mlp = MLP(input_dim, embed_dim // 2, embed_dim, 2)
+        self.pooling = pooling
+        self.lse_tau = lse_tau
+        self.gem_p = gem_p
         self.reliability_head = nn.Sequential(
             nn.Linear(embed_dim, embed_dim // 2),
             nn.ReLU(inplace=True),
@@ -170,7 +217,14 @@ class VisualEmbeddingLayer(nn.Module):
         
         weights = torch.softmax(logits, dim=1).type_as(features)
         features_weighted = (features * weights.unsqueeze(-1)).sum(dim=1)
-        features_max = maxk_pool1d_var(features, 1, 1, feat_lengths)
+        if self.pooling == 'max':
+            features_max = maxk_pool1d_var(features, 1, 1, feat_lengths)
+        elif self.pooling == 'lse':
+            features_max = lse_pool1d_var(features, 1, feat_lengths, tau=self.lse_tau)
+        elif self.pooling == 'gem':
+            features_max = gem_pool1d_var(features, 1, feat_lengths, p=self.gem_p)
+        else:
+            features_max = maxk_pool1d_var(features, 1, 1, feat_lengths)
         features = (1.0 - self.reliability_blend) * features_max + self.reliability_blend * features_weighted
  
         return features.float()
