@@ -106,7 +106,10 @@ def build_dataloader(args, tranforms=None):
     logger = logging.getLogger("IRRA.dataset")
 
     num_workers = args.num_workers
-    dataset = __factory[args.dataset_name](root=args.root_dir)
+    if args.dataset_name == 'RSTPReid':
+        dataset = __factory[args.dataset_name](root=args.root_dir, anno_path=getattr(args, 'rstpreid_anno_path', ''))
+    else:
+        dataset = __factory[args.dataset_name](root=args.root_dir)
     num_classes = len(dataset.train_id_container)
     
     if args.training:
@@ -182,7 +185,7 @@ def build_dataloader(args, tranforms=None):
             test_transforms = build_transforms(img_size=args.img_size,
                                                is_train=False)
 
-        ds = dataset.test
+        ds = dataset.val if getattr(args, 'val_dataset', 'test') == 'val' else dataset.test
         test_img_set = ImageDataset(ds['image_pids'], ds['img_paths'],
                                     test_transforms, args=args)
         test_txt_set = TextDataset(ds['caption_pids'],

@@ -19,12 +19,21 @@ class RSTPReid(BaseDataset):
     """
     dataset_dir = 'RSTPReid'
 
-    def __init__(self, root='', verbose=True):
+    def __init__(self, root='', verbose=True, anno_path: str = ""):
         super(RSTPReid, self).__init__()
         self.dataset_dir = op.join(root, self.dataset_dir)
         self.img_dir = op.join(self.dataset_dir, 'imgs/')
 
-        self.anno_path = op.join(self.dataset_dir, 'data_captions.json')
+        if anno_path is None:
+            anno_path = ""
+        anno_path = str(anno_path)
+        if anno_path:
+            if op.isabs(anno_path):
+                self.anno_path = anno_path
+            else:
+                self.anno_path = op.join(self.dataset_dir, anno_path)
+        else:
+            self.anno_path = op.join(self.dataset_dir, 'data_captions.json')
         self._check_before_run()
 
         self.train_annos, self.test_annos, self.val_annos = self._split_anno(self.anno_path)
