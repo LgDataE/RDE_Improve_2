@@ -3,8 +3,13 @@ import json
 import os
 import os.path as op
 import random
+import sys
 import time
 import urllib.request
+
+_PROJECT_ROOT = op.dirname(op.dirname(op.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 import torch
 import torch.nn.functional as F
