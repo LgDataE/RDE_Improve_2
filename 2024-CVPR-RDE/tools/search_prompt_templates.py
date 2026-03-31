@@ -27,6 +27,81 @@ from utils.iotools import load_train_configs
 from utils.metrics import get_metrics
 
 
+def _load_captions_from_file(path: str):
+    path = str(path or '').strip()
+    if not path:
+        return []
+    if not op.exists(path):
+        raise FileNotFoundError(path)
+
+    ext = op.splitext(path)[1].lower()
+    if ext == '.txt':
+        out = []
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                s = line.strip()
+                if s:
+                    out.append(s)
+        return out
+
+    if ext == '.json':
+        with open(path, 'r', encoding='utf-8') as f:
+            obj = json.load(f)
+        if isinstance(obj, list):
+            if all(isinstance(x, str) for x in obj):
+                return [str(x).strip() for x in obj if str(x).strip()]
+            out = []
+            for rec in obj:
+                if isinstance(rec, dict) and 'captions' in rec and isinstance(rec['captions'], list):
+                    for c in rec['captions']:
+                        s = str(c).strip()
+                        if s:
+                            out.append(s)
+            return out
+        if isinstance(obj, dict) and 'captions' in obj and isinstance(obj['captions'], list):
+            return [str(x).strip() for x in obj['captions'] if str(x).strip()]
+        raise RuntimeError('Unsupported JSON format for --llm_context_file')
+
+    raise RuntimeError('Unsupported file extension for --llm_context_file (use .txt or .json)')
+
+
+def _sample_caption_examples(captions, n: int, seed: int):
+    if captions is None:
+        return []
+    captions = [str(c).strip() for c in captions if str(c).strip()]
+    if not captions:
+        return []
+    n = int(n)
+    if n <= 0:
+        return []
+
+    rng = random.Random(int(seed))
+    if n >= len(captions):
+        rng.shuffle(captions)
+        return captions
+
+    idxs = list(range(len(captions)))
+    rng.shuffle(idxs)
+    return [captions[i] for i in idxs[:n]]
+
+
+def _dataset_captions(dataset, split: str):
+    split = str(split or '').strip().lower()
+    if split == 'train':
+        if hasattr(dataset, 'train') and isinstance(dataset.train, list):
+            return [x[3] for x in dataset.train if isinstance(x, (tuple, list)) and len(x) >= 4]
+        return []
+    if split == 'val':
+        if hasattr(dataset, 'val') and isinstance(dataset.val, dict) and 'captions' in dataset.val:
+            return list(dataset.val['captions'])
+        return []
+    if split == 'test':
+        if hasattr(dataset, 'test') and isinstance(dataset.test, dict) and 'captions' in dataset.test:
+            return list(dataset.test['captions'])
+        return []
+    return []
+
+
 def _strip_code_fence(text: str) -> str:
     text = text.strip()
     if text.startswith("```"):
@@ -82,6 +157,8 @@ def _generate_templates(
     timeout: int,
     n: int,
     extra_instructions: str,
+    caption_examples,
+    context_max_chars: int,
 ):
     sys_prompt = (
         "You generate prompt templates for text-to-image person re-identification using CLIP-style text encoder. "
@@ -96,7 +173,29 @@ def _generate_templates(
         "- Mix neutral and photo-style phrasing\n"
         "- Output ONLY a JSON array of strings\n"
         "{extra}\n"
-    ).format(n=int(n), extra=str(extra_instructions or "").strip())
+    ).format(n=int(n), caption="{caption}", extra=str(extra_instructions or "").strip())
+
+    caption_examples = caption_examples or []
+    if caption_examples:
+        header = "\nSample captions from the target dataset:\n"
+        max_chars = int(context_max_chars) if int(context_max_chars) > 0 else 0
+        lines = []
+        used = 0
+        for c in caption_examples:
+            s = str(c).strip().replace('\n', ' ')
+            if not s:
+                continue
+            if len(s) > 220:
+                s = s[:220] + '...'
+            line = "- " + s
+            if max_chars > 0:
+                extra = len(line) + 1
+                if used + extra > max_chars:
+                    break
+                used += extra
+            lines.append(line)
+        if lines:
+            user_prompt = user_prompt + header + "\n".join(lines) + "\n"
 
     messages = [
         {'role': 'system', 'content': sys_prompt},
@@ -238,6 +337,12 @@ def main():
     parser.add_argument('--template_extra', type=str, default='')
     parser.add_argument('--in_templates_json', type=str, default='')
 
+    parser.add_argument('--llm_context_n', type=int, default=0)
+    parser.add_argument('--llm_context_split', type=str, default='train', choices=['train', 'val', 'test'])
+    parser.add_argument('--llm_context_seed', type=int, default=0)
+    parser.add_argument('--llm_context_file', type=str, default='')
+    parser.add_argument('--llm_context_max_chars', type=int, default=4000)
+
     parser.add_argument('--seed_templates', type=str, nargs='*', default=[])
 
     parser.add_argument('--proxy_metric', type=str, default='margin', choices=['margin', 'r1'])
@@ -316,6 +421,15 @@ def main():
         api_key = args_cli.api_key or os.environ.get('OPENAI_API_KEY', '')
         if not api_key:
             raise RuntimeError('Missing API key. Set OPENAI_API_KEY or pass --api_key')
+
+        caption_examples = []
+        if int(args_cli.llm_context_n) > 0:
+            if args_cli.llm_context_file:
+                captions = _load_captions_from_file(args_cli.llm_context_file)
+            else:
+                captions = _dataset_captions(dataset, args_cli.llm_context_split)
+            caption_examples = _sample_caption_examples(captions, int(args_cli.llm_context_n), int(args_cli.llm_context_seed))
+
         gen = _generate_templates(
             api_key=api_key,
             base_url=args_cli.base_url,
@@ -325,6 +439,8 @@ def main():
             timeout=args_cli.timeout,
             n=int(args_cli.generate_n),
             extra_instructions=args_cli.template_extra,
+            caption_examples=caption_examples,
+            context_max_chars=int(args_cli.llm_context_max_chars),
         )
         for t in gen:
             if t not in templates:
