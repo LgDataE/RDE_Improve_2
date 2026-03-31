@@ -11,6 +11,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from matplotlib.patches import Rectangle
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -53,7 +54,10 @@ def parse_args():
     parser.add_argument("--embedding_max_images_per_id", type=int, default=2)
     parser.add_argument("--num_retrieval", type=int, default=8)
     parser.add_argument("--retrieval_topk", type=int, default=5)
-    parser.add_argument("--retrieval_branch", type=str, default="BGE+TSE", choices=["BGE", "TSE", "BGE+TSE"])
+    parser.add_argument("--retrieval_branch", type=str, default="GE+RFE")
+    parser.add_argument("--heatmap_num_images", type=int, default=6)
+    parser.add_argument("--heatmap_alpha", type=float, default=0.45)
+    parser.add_argument("--heatmap_highlight_topk", type=int, default=8)
     parser.add_argument("--run_dir", type=str, default="")
     parser.add_argument("--plot_ccd", action="store_true")
     parser.add_argument("--ccd_batch_size", type=int, default=64)
@@ -178,15 +182,32 @@ def normalize_feats(qfeats, gfeats):
     return F.normalize(qfeats.float(), p=2, dim=1), F.normalize(gfeats.float(), p=2, dim=1)
 
 
+def normalize_branch_name(branch: str):
+    branch = str(branch or "").strip().upper().replace(" ", "")
+    mapping = {
+        "BGE": "GE",
+        "TSE": "RFE",
+        "BGE+TSE": "GE+RFE",
+        "GE": "GE",
+        "RFE": "RFE",
+        "GE+RFE": "GE+RFE",
+    }
+    if branch not in mapping:
+        raise ValueError(f"Unsupported branch name: {branch}")
+    return mapping[branch]
+
+
 def compute_similarity(branch, q_bge, g_bge, q_tse, g_tse):
-    if branch == "BGE":
+    branch = normalize_branch_name(branch)
+    if branch == "GE":
         return q_bge @ g_bge.t()
-    if branch == "TSE":
+    if branch == "RFE":
         return q_tse @ g_tse.t()
     return 0.5 * ((q_bge @ g_bge.t()) + (q_tse @ g_tse.t()))
 
 
 def compute_metric_row(branch, sims, qids, gids, max_rank):
+    branch = normalize_branch_name(branch)
     cmc, mAP, mINP, _ = rank(sims, q_pids=qids, g_pids=gids, max_rank=max_rank, get_mAP=True)
     cmc_np = cmc.detach().cpu().numpy()
     row = {
@@ -307,8 +328,8 @@ def plot_embedding_projection(q_bge, g_bge, q_tse, g_tse, qids, gids, output_dir
     g_labels = np.array(g_labels)
 
     branch_feats = {
-        "BGE": (q_bge.detach().cpu().numpy(), g_bge.detach().cpu().numpy()),
-        "TSE": (q_tse.detach().cpu().numpy(), g_tse.detach().cpu().numpy()),
+        "GE": (q_bge.detach().cpu().numpy(), g_bge.detach().cpu().numpy()),
+        "RFE": (q_tse.detach().cpu().numpy(), g_tse.detach().cpu().numpy()),
     }
     colors = plt.cm.tab10(np.linspace(0, 1, max(1, len(selected_ids))))
     fig, axes = plt.subplots(1, len(branch_feats), figsize=(7 * len(branch_feats), 6))
@@ -351,6 +372,74 @@ def plot_embedding_projection(q_bge, g_bge, q_tse, g_tse, qids, gids, output_dir
     }
     with open(output_dir / "embedding_projection.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
+
+
+def resolve_grid_size(model, img_size):
+    visual = getattr(getattr(model, "base_model", None), "visual", None)
+    if visual is None:
+        return None
+    num_y = getattr(visual, "num_y", None)
+    num_x = getattr(visual, "num_x", None)
+    if num_y is not None and num_x is not None:
+        return int(num_y), int(num_x)
+    resolution = getattr(visual, "input_resolution", img_size)
+    if isinstance(resolution, (list, tuple)):
+        img_h, img_w = int(resolution[0]), int(resolution[1])
+    else:
+        img_h = int(resolution)
+        img_w = int(resolution)
+    conv1 = getattr(visual, "conv1", None)
+    if conv1 is None:
+        return None
+    kernel = conv1.kernel_size if isinstance(conv1.kernel_size, tuple) else (conv1.kernel_size, conv1.kernel_size)
+    stride = conv1.stride if isinstance(conv1.stride, tuple) else (conv1.stride, conv1.stride)
+    num_y = (img_h - int(kernel[0])) // int(stride[0]) + 1
+    num_x = (img_w - int(kernel[1])) // int(stride[1]) + 1
+    if num_y <= 0 or num_x <= 0:
+        return None
+    return int(num_y), int(num_x)
+
+
+def compute_rfe_patch_data(model, images, grid_size):
+    vis_layer = getattr(model, "visul_emb_layer", None)
+    base_model = getattr(model, "base_model", None)
+    if vis_layer is None or base_model is None:
+        return None
+    num_y, num_x = grid_size
+    with torch.no_grad():
+        if hasattr(model, "_update_reliability_blend"):
+            model._update_reliability_blend()
+        base_features, atten = base_model.encode_image(images)
+        atten = atten.detach().clone()
+        base_features = base_features.detach()
+        bs = base_features.size(0)
+        k = max(1, int((atten.size(1) - 1) * vis_layer.ratio))
+        atten[torch.arange(bs, device=atten.device), :, 0] = -1
+        atten_topk_raw = atten[:, 0].topk(dim=-1, k=k)[1]
+        atten_topk = atten_topk_raw.unsqueeze(-1).expand(bs, k, base_features.size(2))
+        selected_features = torch.gather(input=base_features, dim=1, index=atten_topk)
+        selected_features = F.normalize(selected_features.float(), p=2, dim=-1).to(dtype=vis_layer.fc.weight.dtype)
+        features = vis_layer.fc(selected_features)
+        features = vis_layer.mlp(selected_features) + features
+        logits = vis_layer.reliability_head(features).squeeze(-1).float()
+        selected_atten = atten[:, 0].gather(dim=1, index=atten_topk_raw).detach().float()
+        logits = logits + 0.1 * selected_atten
+        num_keep = max(1, int(k * vis_layer.topk_reliable_ratio))
+        topk_reliable_idx = logits.topk(num_keep, dim=1)[1]
+        topk_reliable_mask = torch.zeros_like(logits, dtype=torch.bool)
+        topk_reliable_mask.scatter_(1, topk_reliable_idx, True)
+        logits = logits.masked_fill(~topk_reliable_mask, -1e4)
+        weights = torch.softmax(logits, dim=1)
+        full_map = torch.zeros(bs, atten.size(1), device=weights.device, dtype=weights.dtype)
+        full_map.scatter_(1, atten_topk_raw, weights)
+        patch_map = full_map[:, 1:]
+        if patch_map.size(1) != num_y * num_x:
+            return None
+        return {
+            "patch_maps": patch_map.view(bs, num_y, num_x).detach().cpu().numpy(),
+            "selected_patch_tokens": atten_topk_raw.detach().cpu().numpy(),
+            "selected_patch_weights": weights.detach().cpu().numpy(),
+        }
 
 
 def select_query_indices(topk_indices, qids, gids, num_queries, seed):
@@ -415,6 +504,169 @@ def plot_retrieval_examples(ds, args, topk_indices, topk_scores, qids, gids, out
         json.dump(summary, f, indent=2, ensure_ascii=False)
 
 
+def select_gallery_indices(gids, num_images, seed):
+    gids_np = gids.detach().cpu().numpy()
+    rng = np.random.default_rng(seed)
+    chosen = []
+    unique_ids = np.array(sorted(np.unique(gids_np)))
+    if len(unique_ids) > 0:
+        sampled_ids = rng.choice(unique_ids, size=min(len(unique_ids), num_images), replace=False)
+        for pid in sampled_ids.tolist():
+            candidates = np.where(gids_np == pid)[0]
+            if len(candidates) == 0:
+                continue
+            pick = int(rng.choice(candidates))
+            if pick not in chosen:
+                chosen.append(pick)
+    if len(chosen) < num_images:
+        for item in rng.choice(np.arange(len(gids_np)), size=min(len(gids_np), num_images - len(chosen)), replace=False).tolist():
+            if int(item) not in chosen:
+                chosen.append(int(item))
+    return chosen[:num_images]
+
+
+def patch_token_to_rect(token_idx: int, grid_size, image_size):
+    num_y, num_x = int(grid_size[0]), int(grid_size[1])
+    width, height = int(image_size[0]), int(image_size[1])
+    patch_idx = max(0, int(token_idx))
+    row = patch_idx // num_x
+    col = patch_idx % num_x
+    patch_w = width / max(1, num_x)
+    patch_h = height / max(1, num_y)
+    x0 = col * patch_w
+    y0 = row * patch_h
+    return x0, y0, patch_w, patch_h
+
+
+def draw_patch_grid(ax, grid_size, image_size, color="white", linewidth=0.6, alpha=0.35):
+    num_y, num_x = int(grid_size[0]), int(grid_size[1])
+    width, height = int(image_size[0]), int(image_size[1])
+    for gx in range(1, num_x):
+        x = width * gx / max(1, num_x)
+        ax.plot([x, x], [0, height], color=color, linewidth=linewidth, alpha=alpha)
+    for gy in range(1, num_y):
+        y = height * gy / max(1, num_y)
+        ax.plot([0, width], [y, y], color=color, linewidth=linewidth, alpha=alpha)
+
+
+def draw_highlighted_patches(ax, top_tokens, top_weights, grid_size, image_size):
+    for rank, (token_idx, weight) in enumerate(zip(top_tokens, top_weights), start=1):
+        x0, y0, patch_w, patch_h = patch_token_to_rect(int(token_idx), grid_size, image_size)
+        rect = Rectangle((x0, y0), patch_w, patch_h, fill=False, edgecolor="yellow", linewidth=2.0)
+        ax.add_patch(rect)
+        ax.text(
+            x0 + patch_w * 0.08,
+            y0 + patch_h * 0.20,
+            f"{rank}",
+            color="black",
+            fontsize=9,
+            fontweight="bold",
+            bbox={"facecolor": "yellow", "edgecolor": "black", "boxstyle": "round,pad=0.15", "alpha": 0.9},
+        )
+        ax.text(
+            x0 + patch_w * 0.08,
+            y0 + patch_h * 0.52,
+            f"{float(weight):.2f}",
+            color="white",
+            fontsize=7,
+            fontweight="bold",
+            bbox={"facecolor": "black", "edgecolor": "none", "boxstyle": "round,pad=0.12", "alpha": 0.65},
+        )
+
+
+def plot_rfe_patch_heatmaps(ds, args, model, gids, output_dir: Path, seed: int, num_images: int, alpha: float, highlight_topk: int, logger):
+    if num_images <= 0:
+        return
+    grid_size = resolve_grid_size(model, getattr(args, "img_size", 224))
+    if grid_size is None:
+        logger.info("Skip RFE patch heatmaps: unable to determine visual token grid.")
+        return
+    img_paths = list(ds["img_paths"])
+    if getattr(args, "test_dt_type", 1) == 0:
+        img_paths = [change_path(args.dataset_name, p) for p in img_paths]
+    chosen = select_gallery_indices(gids, num_images, seed)
+    if not chosen:
+        return
+    transform = build_transforms(img_size=args.img_size, aug=False, is_train=False)
+    originals = []
+    tensors = []
+    valid_indices = []
+    for gallery_idx in chosen:
+        try:
+            img = Image.open(img_paths[gallery_idx]).convert("RGB")
+        except Exception as exc:
+            logger.info(f"Skip heatmap sample {img_paths[gallery_idx]}: {exc}")
+            continue
+        originals.append(img.copy())
+        tensors.append(transform(img))
+        valid_indices.append(gallery_idx)
+    if not tensors:
+        logger.info("Skip RFE patch heatmaps: no valid images loaded.")
+        return
+    device = next(model.parameters()).device
+    batch = torch.stack(tensors, dim=0).to(device)
+    patch_data = compute_rfe_patch_data(model, batch, grid_size)
+    if patch_data is None:
+        logger.info("Skip RFE patch heatmaps: failed to compute patch weights.")
+        return
+    out_dir = output_dir / "rfe_patch_heatmaps"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    patch_maps = patch_data["patch_maps"]
+    selected_patch_tokens = patch_data["selected_patch_tokens"]
+    selected_patch_weights = patch_data["selected_patch_weights"]
+    summary = []
+    for local_idx, gallery_idx in enumerate(valid_indices):
+        pid = int(gids[gallery_idx].item())
+        image = originals[local_idx]
+        image_np = np.asarray(image)
+        heatmap = patch_maps[local_idx]
+        heatmap = heatmap - heatmap.min()
+        heatmap = heatmap / (heatmap.max() + 1e-12)
+        heatmap_img = Image.fromarray(np.uint8(np.clip(heatmap * 255.0, 0, 255)), mode="L").resize(image.size, resample=Image.BICUBIC)
+        heatmap_np = np.asarray(heatmap_img).astype(np.float32) / 255.0
+        token_ids = [int(v) - 1 for v in selected_patch_tokens[local_idx].tolist() if int(v) > 0]
+        token_weights = [float(v) for v in selected_patch_weights[local_idx].tolist()]
+        ranked_pairs = sorted(zip(token_ids, token_weights), key=lambda item: item[1], reverse=True)
+        ranked_pairs = [item for item in ranked_pairs if item[1] > 0]
+        top_pairs = ranked_pairs[:max(1, int(highlight_topk))] if ranked_pairs else []
+        top_tokens = [item[0] for item in top_pairs]
+        top_weights = [item[1] for item in top_pairs]
+        fig, axes = plt.subplots(1, 4, figsize=(17, 4.6))
+        axes[0].imshow(image_np)
+        axes[0].set_title(f"Original\nPID={pid}")
+        im = axes[1].imshow(heatmap_np, cmap="jet")
+        axes[1].set_title("RFE Patch Importance")
+        axes[2].imshow(image_np)
+        draw_patch_grid(axes[2], grid_size, image.size)
+        draw_highlighted_patches(axes[2], top_tokens, top_weights, grid_size, image.size)
+        axes[2].set_title("Patch Grid + Top Patches")
+        axes[3].imshow(image_np)
+        axes[3].imshow(heatmap_np, cmap="jet", alpha=alpha)
+        draw_patch_grid(axes[3], grid_size, image.size, color="white", linewidth=0.5, alpha=0.28)
+        draw_highlighted_patches(axes[3], top_tokens, top_weights, grid_size, image.size)
+        axes[3].set_title("Overlay + Highlighted Patches")
+        for ax in axes:
+            ax.set_xticks([])
+            ax.set_yticks([])
+        fig.colorbar(im, ax=axes[1], fraction=0.046, pad=0.04)
+        fig.tight_layout()
+        out_path = out_dir / f"gallery_{gallery_idx:05d}_pid_{pid}.png"
+        fig.savefig(out_path, dpi=200, bbox_inches="tight")
+        plt.close(fig)
+        summary.append({
+            "gallery_index": int(gallery_idx),
+            "gallery_pid": pid,
+            "img_path": img_paths[gallery_idx],
+            "output_image": str(out_path),
+            "grid_size": [int(grid_size[0]), int(grid_size[1])],
+            "selected_patch_tokens": token_ids,
+            "selected_patch_weights": token_weights,
+            "highlighted_top_patches": [{"patch_index": int(token_idx), "weight": float(weight), "rank": int(rank + 1)} for rank, (token_idx, weight) in enumerate(top_pairs)],
+        })
+    with open(output_dir / "rfe_patch_heatmaps.json", "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+
+
 def plot_learning_curves(run_dir: str, output_dir: Path, logger):
     run_dir = str(run_dir or "").strip()
     if not run_dir:
@@ -440,10 +692,11 @@ def plot_learning_curves(run_dir: str, output_dir: Path, logger):
     rows = math.ceil(len(available) / cols)
     fig, axes = plt.subplots(rows, cols, figsize=(12, 4 * rows))
     axes = np.array(axes).reshape(-1)
+    display_names = {"loss": "Loss", "bge_loss": "GE loss", "tse_loss": "RFE loss", "R1": "R1", "lr": "LR", "temperature": "Temperature"}
     for ax, tag in zip(axes, available):
         events = acc.Scalars(tag)
         ax.plot([e.step for e in events], [e.value for e in events], marker="o", linewidth=1.5)
-        ax.set_title(tag)
+        ax.set_title(display_names.get(tag, tag))
         ax.grid(alpha=0.3)
     for ax in axes[len(available):]:
         ax.axis("off")
@@ -505,17 +758,17 @@ def plot_ccd(args, model, device, output_dir: Path, batch_size: int, max_batches
     fig, axes = plt.subplots(1, 3, figsize=(16, 4))
     axes[0].hist(losses_a[real == 1], bins=40, alpha=0.6, label="clean", color="#4C78A8")
     axes[0].hist(losses_a[real == 0], bins=40, alpha=0.6, label="noisy", color="#E45756")
-    axes[0].set_title("BGE Loss Distribution")
+    axes[0].set_title("GE Loss Distribution")
     axes[0].legend()
     axes[1].hist(losses_b[real == 1], bins=40, alpha=0.6, label="clean", color="#4C78A8")
     axes[1].hist(losses_b[real == 0], bins=40, alpha=0.6, label="noisy", color="#E45756")
-    axes[1].set_title("TSE Loss Distribution")
+    axes[1].set_title("RFE Loss Distribution")
     axes[1].legend()
     scatter_n = min(4000, len(losses_a))
     pick = np.random.default_rng(0).choice(len(losses_a), size=scatter_n, replace=False)
     axes[2].scatter(losses_a[pick], losses_b[pick], c=consensus[pick], cmap="coolwarm", s=10, alpha=0.7)
-    axes[2].set_xlabel("BGE loss")
-    axes[2].set_ylabel("TSE loss")
+    axes[2].set_xlabel("GE loss")
+    axes[2].set_ylabel("RFE loss")
     axes[2].set_title("CCD consensus split")
     for ax in axes:
         ax.grid(alpha=0.3)
@@ -530,6 +783,8 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     logger = setup_logger(output_dir)
     set_seed(cli_args.seed)
+    cli_args.retrieval_branch = normalize_branch_name(cli_args.retrieval_branch)
+    cli_args.heatmap_alpha = min(max(float(cli_args.heatmap_alpha), 0.0), 1.0)
     args = load_runtime_args(cli_args)
     dataset = build_dataset(args)
     ds = dataset.val if cli_args.val_dataset == "val" else dataset.test
@@ -560,7 +815,7 @@ def main():
     cmc_dict = {}
     score_dict = {}
     retrieval_cache = None
-    for idx, branch in enumerate(["BGE", "TSE", "BGE+TSE"]):
+    for idx, branch in enumerate(["GE", "RFE", "GE+RFE"]):
         sims = compute_similarity(branch, q_bge, g_bge, q_tse, g_tse)
         row, cmc = compute_metric_row(branch, sims, qids, gids, cli_args.cmc_max_rank)
         metric_rows.append(row)
@@ -575,6 +830,7 @@ def main():
     plot_score_distributions(score_dict, output_dir)
     if retrieval_cache is not None:
         plot_retrieval_examples(ds, args, retrieval_cache[0], retrieval_cache[1], qids, gids, output_dir, cli_args.retrieval_topk, cli_args.num_retrieval, cli_args.seed)
+    plot_rfe_patch_heatmaps(ds, args, model, gids, output_dir, cli_args.seed, cli_args.heatmap_num_images, cli_args.heatmap_alpha, cli_args.heatmap_highlight_topk, logger)
     plot_learning_curves(cli_args.run_dir or str(Path(cli_args.config_file).resolve().parent), output_dir, logger)
     if cli_args.plot_ccd:
         plot_ccd(args, model, device, output_dir, cli_args.ccd_batch_size, cli_args.ccd_max_batches, logger)
