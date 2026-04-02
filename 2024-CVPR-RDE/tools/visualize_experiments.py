@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import sys
+import textwrap
 from pathlib import Path
 
 import matplotlib
@@ -474,12 +475,40 @@ def plot_retrieval_examples(ds, args, topk_indices, topk_scores, qids, gids, out
     retrieval_dir.mkdir(parents=True, exist_ok=True)
     summary = []
     for out_idx, q_idx in enumerate(chosen):
-        fig, axes = plt.subplots(1, topk + 1, figsize=(3.3 * (topk + 1), 4.4))
+        width_ratios = [1.9] + [1.0] * topk
+        fig, axes = plt.subplots(
+            1,
+            topk + 1,
+            figsize=(4.0 + 3.2 * topk, 4.8),
+            gridspec_kw={"width_ratios": width_ratios},
+        )
         axes[0].axis("off")
         caption = ds["captions"][q_idx]
         pid = int(qids[q_idx].item())
-        axes[0].text(0.0, 1.0, f"Query {q_idx}\nPID={pid}", va="top", fontsize=11, fontweight="bold")
-        axes[0].text(0.0, 0.82, caption, va="top", wrap=True, fontsize=10)
+        wrapped_caption = textwrap.fill(str(caption), width=34)
+        axes[0].set_xlim(0, 1)
+        axes[0].set_ylim(0, 1)
+        axes[0].text(
+            0.03,
+            0.97,
+            f"Query {q_idx}\nPID={pid}",
+            va="top",
+            ha="left",
+            fontsize=11,
+            fontweight="bold",
+            transform=axes[0].transAxes,
+        )
+        axes[0].text(
+            0.03,
+            0.78,
+            wrapped_caption,
+            va="top",
+            ha="left",
+            fontsize=9.5,
+            linespacing=1.35,
+            transform=axes[0].transAxes,
+            bbox={"facecolor": "#F7F7F7", "edgecolor": "#D0D0D0", "boxstyle": "round,pad=0.45"},
+        )
         recs = []
         for rank_idx in range(topk):
             gallery_idx = int(topk_indices[q_idx, rank_idx].item())
@@ -495,7 +524,7 @@ def plot_retrieval_examples(ds, args, topk_indices, topk_scores, qids, gids, out
                 spine.set_linewidth(3)
                 spine.set_edgecolor("green" if correct else "red")
             recs.append({"rank": rank_idx + 1, "gallery_idx": gallery_idx, "pid": int(gids[gallery_idx].item()), "score": score, "correct": bool(correct), "img_path": img_paths[gallery_idx]})
-        fig.tight_layout()
+        fig.tight_layout(pad=1.0, w_pad=1.2)
         out_path = retrieval_dir / f"query_{out_idx:02d}.png"
         fig.savefig(out_path, dpi=200, bbox_inches="tight")
         plt.close(fig)
