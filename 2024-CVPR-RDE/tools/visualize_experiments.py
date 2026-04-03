@@ -13,6 +13,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from matplotlib.patches import Rectangle
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes, mark_inset
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -295,6 +296,74 @@ def pca_project(features: np.ndarray, n_components: int = 2):
     return centered @ vh[:n_components].T
 
 
+def compute_zoom_limits(points: np.ndarray, pad_ratio: float = 0.45, min_pad: float = 0.08):
+    x_min = float(points[:, 0].min())
+    x_max = float(points[:, 0].max())
+    y_min = float(points[:, 1].min())
+    y_max = float(points[:, 1].max())
+    x_span = max(x_max - x_min, min_pad)
+    y_span = max(y_max - y_min, min_pad)
+    x_pad = max(x_span * pad_ratio, min_pad)
+    y_pad = max(y_span * pad_ratio, min_pad)
+    return [x_min - x_pad, x_max + x_pad], [y_min - y_pad, y_max + y_pad]
+
+
+def find_best_projection_zoom(q_proj: np.ndarray, g_proj: np.ndarray, q_labels: np.ndarray, g_labels: np.ndarray, selected_ids):
+    best = None
+    for pid in selected_ids:
+        pid = int(pid)
+        q_points = q_proj[q_labels == pid]
+        g_points = g_proj[g_labels == pid]
+        if len(q_points) == 0 or len(g_points) == 0:
+            continue
+        combined = np.concatenate([q_points, g_points], axis=0)
+        pairwise = np.linalg.norm(q_points[:, None, :] - g_points[None, :, :], axis=-1)
+        centroid = combined.mean(axis=0)
+        compactness = np.linalg.norm(combined - centroid, axis=1).mean()
+        score = float(pairwise.mean() + 0.35 * compactness)
+        xlim, ylim = compute_zoom_limits(combined)
+        candidate = {
+            "pid": pid,
+            "score": score,
+            "xlim": xlim,
+            "ylim": ylim,
+            "center": [float(centroid[0]), float(centroid[1])],
+        }
+        if best is None or candidate["score"] < best["score"]:
+            best = candidate
+    return best
+
+
+def add_projection_zoom_inset(ax, q_proj: np.ndarray, g_proj: np.ndarray, q_labels: np.ndarray, g_labels: np.ndarray, selected_ids, pid_to_color):
+    zoom_info = find_best_projection_zoom(q_proj, g_proj, q_labels, g_labels, selected_ids)
+    if zoom_info is None:
+        return None
+    axins = inset_axes(ax, width="40%", height="40%", loc="lower right", borderpad=1.0)
+    for pid in selected_ids:
+        pid = int(pid)
+        color = pid_to_color[pid]
+        q_mask = q_labels == pid
+        g_mask = g_labels == pid
+        axins.scatter(q_proj[q_mask, 0], q_proj[q_mask, 1], marker="o", s=26, color=color, alpha=0.8)
+        axins.scatter(g_proj[g_mask, 0], g_proj[g_mask, 1], marker="^", s=34, color=color, alpha=0.85)
+    focus_pid = int(zoom_info["pid"])
+    focus_color = pid_to_color[focus_pid]
+    q_mask = q_labels == focus_pid
+    g_mask = g_labels == focus_pid
+    axins.scatter(q_proj[q_mask, 0], q_proj[q_mask, 1], marker="o", s=42, color=focus_color, edgecolors="black", linewidths=0.8)
+    axins.scatter(g_proj[g_mask, 0], g_proj[g_mask, 1], marker="^", s=52, color=focus_color, edgecolors="black", linewidths=0.8)
+    axins.set_xlim(*zoom_info["xlim"])
+    axins.set_ylim(*zoom_info["ylim"])
+    axins.set_title(f"Zoom-in PID {focus_pid}", fontsize=8)
+    axins.grid(alpha=0.22)
+    axins.tick_params(axis="both", labelsize=6)
+    for spine in axins.spines.values():
+        spine.set_edgecolor(focus_color)
+        spine.set_linewidth(1.2)
+    mark_inset(ax, axins, loc1=2, loc2=4, fc="none", ec=focus_color, lw=1.0)
+    return zoom_info
+
+
 def plot_embedding_projection(q_bge, g_bge, q_tse, g_tse, qids, gids, output_dir: Path, seed: int, num_ids: int, max_queries_per_id: int, max_images_per_id: int):
     qids_np = qids.detach().cpu().numpy()
     gids_np = gids.detach().cpu().numpy()
@@ -333,9 +402,11 @@ def plot_embedding_projection(q_bge, g_bge, q_tse, g_tse, qids, gids, output_dir
         "RFE": (q_tse.detach().cpu().numpy(), g_tse.detach().cpu().numpy()),
     }
     colors = plt.cm.tab10(np.linspace(0, 1, max(1, len(selected_ids))))
+    pid_to_color = {int(pid): tuple(color) for color, pid in zip(colors, selected_ids)}
     fig, axes = plt.subplots(1, len(branch_feats), figsize=(7 * len(branch_feats), 6))
     if len(branch_feats) == 1:
         axes = [axes]
+    zoom_summaries = {}
 
     for ax, (branch, (q_feat, g_feat)) in zip(axes, branch_feats.items()):
         merged = np.concatenate([q_feat[selected_q], g_feat[selected_g]], axis=0)
@@ -347,6 +418,9 @@ def plot_embedding_projection(q_bge, g_bge, q_tse, g_tse, qids, gids, output_dir
             g_mask = g_labels == pid
             ax.scatter(q_proj[q_mask, 0], q_proj[q_mask, 1], marker="o", s=45, color=color, alpha=0.85)
             ax.scatter(g_proj[g_mask, 0], g_proj[g_mask, 1], marker="^", s=60, color=color, alpha=0.9)
+        zoom_info = add_projection_zoom_inset(ax, q_proj, g_proj, q_labels, g_labels, selected_ids, pid_to_color)
+        if zoom_info is not None:
+            zoom_summaries[branch] = zoom_info
         ax.set_title(f"Embedding Projection - {branch}")
         ax.grid(alpha=0.3)
         ax.set_xlabel("PC1")
@@ -360,8 +434,8 @@ def plot_embedding_projection(q_bge, g_bge, q_tse, g_tse, qids, gids, output_dir
         Line2D([0], [0], marker="o", color="black", linestyle="None", label="Text", markersize=7),
         Line2D([0], [0], marker="^", color="black", linestyle="None", label="Image", markersize=8),
     ]
-    axes[0].legend(handles=pid_handles, loc="best", fontsize=8)
-    axes[-1].legend(handles=modality_handles, loc="best", fontsize=9)
+    axes[0].legend(handles=pid_handles, loc="upper left", fontsize=8)
+    axes[-1].legend(handles=modality_handles, loc="upper right", fontsize=9)
     fig.tight_layout()
     fig.savefig(output_dir / "embedding_projection.png", dpi=200, bbox_inches="tight")
     plt.close(fig)
@@ -370,6 +444,7 @@ def plot_embedding_projection(q_bge, g_bge, q_tse, g_tse, qids, gids, output_dir
         "selected_ids": selected_ids,
         "num_query_points": int(len(selected_q)),
         "num_gallery_points": int(len(selected_g)),
+        "zoom_regions": zoom_summaries,
     }
     with open(output_dir / "embedding_projection.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
@@ -475,17 +550,21 @@ def plot_retrieval_examples(ds, args, topk_indices, topk_scores, qids, gids, out
     retrieval_dir.mkdir(parents=True, exist_ok=True)
     summary = []
     for out_idx, q_idx in enumerate(chosen):
-        width_ratios = [1.9] + [1.0] * topk
+        caption = str(ds["captions"][q_idx]).strip()
+        wrap_width = 30 if len(caption) <= 130 else 27
+        wrapped_caption = textwrap.fill(caption, width=wrap_width)
+        num_caption_lines = wrapped_caption.count("\n") + 1
+        fig_height = max(5.3, 4.8 + 0.24 * max(0, num_caption_lines - 4))
+        width_ratios = [2.35] + [1.0] * topk
         fig, axes = plt.subplots(
             1,
             topk + 1,
-            figsize=(4.0 + 3.2 * topk, 4.8),
+            figsize=(5.0 + 3.2 * topk, fig_height),
             gridspec_kw={"width_ratios": width_ratios},
         )
         axes[0].axis("off")
-        caption = ds["captions"][q_idx]
         pid = int(qids[q_idx].item())
-        wrapped_caption = textwrap.fill(str(caption), width=34)
+        caption_fontsize = 11.8 if num_caption_lines <= 6 else 11.0
         axes[0].set_xlim(0, 1)
         axes[0].set_ylim(0, 1)
         axes[0].text(
@@ -494,20 +573,20 @@ def plot_retrieval_examples(ds, args, topk_indices, topk_scores, qids, gids, out
             f"Query {q_idx}\nPID={pid}",
             va="top",
             ha="left",
-            fontsize=11,
+            fontsize=16,
             fontweight="bold",
             transform=axes[0].transAxes,
         )
         axes[0].text(
             0.03,
-            0.78,
+            0.80,
             wrapped_caption,
             va="top",
             ha="left",
-            fontsize=9.5,
-            linespacing=1.35,
+            fontsize=caption_fontsize,
+            linespacing=1.45,
             transform=axes[0].transAxes,
-            bbox={"facecolor": "#F7F7F7", "edgecolor": "#D0D0D0", "boxstyle": "round,pad=0.45"},
+            bbox={"facecolor": "#F7F7F7", "edgecolor": "#D0D0D0", "boxstyle": "round,pad=0.55"},
         )
         recs = []
         for rank_idx in range(topk):
@@ -524,7 +603,7 @@ def plot_retrieval_examples(ds, args, topk_indices, topk_scores, qids, gids, out
                 spine.set_linewidth(3)
                 spine.set_edgecolor("green" if correct else "red")
             recs.append({"rank": rank_idx + 1, "gallery_idx": gallery_idx, "pid": int(gids[gallery_idx].item()), "score": score, "correct": bool(correct), "img_path": img_paths[gallery_idx]})
-        fig.tight_layout(pad=1.0, w_pad=1.2)
+        fig.tight_layout(pad=1.2, w_pad=1.35)
         out_path = retrieval_dir / f"query_{out_idx:02d}.png"
         fig.savefig(out_path, dpi=200, bbox_inches="tight")
         plt.close(fig)
