@@ -801,10 +801,20 @@ def plot_learning_curves(run_dir: str, output_dir: Path, logger):
     fig, axes = plt.subplots(rows, cols, figsize=(12, 4 * rows))
     axes = np.array(axes).reshape(-1)
     display_names = {"loss": "Loss", "bge_loss": "GE loss", "tse_loss": "RFE loss", "R1": "R1", "lr": "LR", "temperature": "Temperature"}
+    y_labels = {
+        "loss": "Loss",
+        "bge_loss": "Loss",
+        "tse_loss": "Loss",
+        "R1": "Accuracy (%)",
+        "lr": "Learning Rate",
+        "temperature": "Temperature",
+    }
     for ax, tag in zip(axes, available):
         events = acc.Scalars(tag)
         ax.plot([e.step for e in events], [e.value for e in events], marker="o", linewidth=1.5)
         ax.set_title(display_names.get(tag, tag))
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel(y_labels.get(tag, "Value"))
         ax.grid(alpha=0.3)
     for ax in axes[len(available):]:
         ax.axis("off")
